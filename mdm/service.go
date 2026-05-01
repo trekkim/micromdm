@@ -6,6 +6,12 @@ import (
 	"github.com/micromdm/micromdm/platform/pubsub"
 )
 
+// GetToken is implemented by a service that can generate a token
+// for a given TokenServiceType (e.g. com.apple.maid).
+type GetToken interface {
+	GetToken(ctx context.Context, udid, serviceType string) ([]byte, error)
+}
+
 // Service describes the core MDM protocol interactions with clients.
 type Service interface {
 	// Checkin is called for all checkin messages (such as Authenticate
@@ -28,6 +34,7 @@ const (
 	GetBootstrapTokenTopic     = "mdm.GetBootstrapToken"
 	SetBootstrapTokenTopic     = "mdm.SetBootstrapToken"
 	DeclarativeManagementTopic = "mdm.DeclarativeManagement"
+	GetTokenTopic              = "mdm.GetToken"
 )
 
 // BootBootstrapTokenRetriever retrieves BootStrap Tokens for devices
@@ -50,10 +57,11 @@ type Queue interface {
 }
 
 type MDMService struct {
-	dev   BootstrapTokenRetriever
-	pub   pubsub.Publisher
-	queue Queue
-	dm    DeclarativeManagement
+	dev      BootstrapTokenRetriever
+	pub      pubsub.Publisher
+	queue    Queue
+	dm       DeclarativeManagement
+	getToken GetToken
 }
 
 func NewService(pub pubsub.Publisher, queue Queue, dev BootstrapTokenRetriever, dm DeclarativeManagement) *MDMService {
@@ -63,4 +71,9 @@ func NewService(pub pubsub.Publisher, queue Queue, dev BootstrapTokenRetriever, 
 		queue: queue,
 		dm:    dm,
 	}
+}
+
+// WithGetToken configures the GetToken handler on an existing MDMService.
+func (svc *MDMService) WithGetToken(gt GetToken) {
+	svc.getToken = gt
 }

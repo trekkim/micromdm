@@ -21,7 +21,7 @@ type CheckinEvent struct {
 type CheckinCommand struct {
 	// MessageType can be either
 	// Authenticate, CheckOut, TokenUpdate,
-	// GetBootstrapToken, or SetBootstrapToken
+	// GetBootstrapToken, SetBootstrapToken, or GetToken
 	MessageType  string
 	Topic        string
 	UDID         string
@@ -31,6 +31,12 @@ type CheckinCommand struct {
 	getBootstrap
 	setBootstrap
 	declarativeManagementMessage
+	getTokenMessage
+}
+
+// GetToken Message Type
+type getTokenMessage struct {
+	TokenServiceType string `plist:",omitempty"`
 }
 
 // Authenticate Message Type

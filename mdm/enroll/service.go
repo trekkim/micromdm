@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/micromdm/micromdm/platform/config"
 	"github.com/micromdm/micromdm/platform/profile"
 	"github.com/micromdm/micromdm/platform/pubsub"
@@ -42,7 +43,7 @@ type Service interface {
 	OTAPhase3(ctx context.Context) (profile.Mobileconfig, error)
 }
 
-func NewService(topic TopicProvider, sub pubsub.Subscriber, scepURL, scepChallenge, url, tlsCertPath, scepSubject string, profileDB profile.Store, challengeStore challenge.Store) (Service, error) {
+func NewService(topic TopicProvider, sub pubsub.Subscriber, scepURL, scepChallenge, url, tlsCertPath, scepSubject, acmeDirectoryURL string, profileDB profile.Store, challengeStore challenge.Store) (Service, error) {
 	var tlsCert []byte
 	var err error
 
@@ -82,6 +83,8 @@ func NewService(topic TopicProvider, sub pubsub.Subscriber, scepURL, scepChallen
 		ProfileDB:          profileDB,
 		Topic:              pushTopic,
 		topicProvier:       topic,
+		ACMEEnabled:        acmeDirectoryURL != "",
+		ACMEDirectoryURL:   acmeDirectoryURL,
 	}
 
 	if err := updateTopic(svc, sub); err != nil {
@@ -127,10 +130,21 @@ type service struct {
 	TLSCert            []byte
 	ProfileDB          profile.Store
 
+	ACMEEnabled      bool
+	ACMEDirectoryURL string
+
 	topicProvier TopicProvider
 
 	mu    sync.RWMutex
 	Topic string // APNS Topic for MDM notifications
+}
+
+// WithACME enables ACME certificate enrollment alongside SCEP.
+// When enabled, the enrollment profile includes both SCEP and ACME payloads,
+// with the MDM identity certificate pointing to the ACME cert.
+func (svc *service) WithACME(directoryURL string) {
+	svc.ACMEEnabled = true
+	svc.ACMEDirectoryURL = directoryURL
 }
 
 type TopicProvider interface {
@@ -190,6 +204,7 @@ func (svc *service) scepChallenge() (challenge string, err error) {
 
 const perUserConnections = "com.apple.mdm.per-user-connections"
 const bootstrapToken = "com.apple.mdm.bootstraptoken"
+const mdmToken = "com.apple.mdm.token"
 
 func (svc *service) MakeEnrollmentProfile() (*cfgprofiles.Profile, error) {
 	profile := cfgprofiles.NewProfile(EnrollmentProfileId)
@@ -211,7 +226,7 @@ func (svc *service) MakeEnrollmentProfile() (*cfgprofiles.Profile, error) {
 	svc.mu.Unlock()
 
 	mdmPayload.SignMessage = true
-	mdmPayload.ServerCapabilities = []string{perUserConnections, bootstrapToken}
+	mdmPayload.ServerCapabilities = []string{perUserConnections, bootstrapToken, mdmToken}
 
 	if svc.SCEPURL != "" {
 		scepPayload := cfgprofiles.NewSCEPPayload(EnrollmentProfileId + ".scep")
@@ -235,7 +250,34 @@ func (svc *service) MakeEnrollmentProfile() (*cfgprofiles.Profile, error) {
 		}
 
 		profile.AddPayload(scepPayload)
+		// Default: MDM identity is SCEP cert (overridden below if ACME is enabled)
 		mdmPayload.IdentityCertificateUUID = scepPayload.PayloadUUID
+	}
+
+	if svc.ACMEEnabled && svc.ACMEDirectoryURL != "" {
+		acmePayload := cfgprofiles.NewACMECertificatePayload(EnrollmentProfileId + ".acme")
+		// Use a deterministic UUID so it stays stable across profile regenerations.
+		acmePayload.PayloadUUID = strings.ToUpper(
+			uuid.NewSHA1(uuid.NameSpaceURL, []byte(EnrollmentProfileId+".acme")).String(),
+		)
+		acmePayload.PayloadDisplayName = "ACME"
+		acmePayload.PayloadDescription = "Configures ACME certificate with hardware attestation"
+		acmePayload.PayloadOrganization = profilePayloadOrganization
+
+		acmePayload.DirectoryURL = svc.ACMEDirectoryURL
+		acmePayload.ClientIdentifier = "$SERIALNUMBER"
+		acmePayload.KeyType = "ECSECPrimeRandom"
+		acmePayload.KeySize = 256
+		acmePayload.HardwareBound = true
+		acmePayload.Attest = true
+		acmePayload.Subject = [][][]string{
+			{{"O", "MicroMDM"}},
+			{{"CN", "MicroMDM Identity (%ComputerName%)"}},
+		}
+
+		profile.AddPayload(acmePayload)
+		// ACME cert is the MDM identity when ACME is enabled
+		mdmPayload.IdentityCertificateUUID = acmePayload.PayloadUUID
 	}
 
 	profile.AddPayload(mdmPayload)

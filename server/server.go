@@ -67,6 +67,10 @@ type Server struct {
 	UDIDCertAuthWarnOnly   bool
 	Queue                  string
 	DMURL                  string
+	GetTokenURL            string
+	GetTokenLocal          bool
+	ACMEBackend            string
+	ACMEEnrollment         bool
 
 	APNSPushService apns.Service
 	CommandService  command.Service
@@ -74,6 +78,8 @@ type Server struct {
 	EnrollService   enroll.Service
 	SCEPService     scep.Service
 	ConfigService   config.Service
+
+	coreMDMService *mdm.MDMService // underlying concrete service for late-bound configuration
 
 	CommandQueue mdm.Queue
 
@@ -212,6 +218,7 @@ func (c *Server) setupCommandQueue(logger log.Logger) error {
 		}
 
 		svc := mdm.NewService(c.PubClient, q, devDB, dm)
+		c.coreMDMService = svc // saved for WithGetToken after DEP client is ready
 		mdmService = svc
 		mdmService = block.RemoveMiddleware(c.RemoveDB)(mdmService)
 
@@ -286,6 +293,11 @@ func (c *Server) setupEnrollmentService() error {
 
 	// TODO: clean up order of inputs. Maybe pass *SCEPConfig as an arg?
 	// but if you do, the packages are coupled, better not.
+	acmeDirectoryURL := ""
+	if c.ACMEEnrollment && c.ACMEBackend != "" {
+		acmeDirectoryURL = c.ServerPublicURL + "/acme/directory"
+	}
+
 	c.EnrollService, err = enroll.NewService(
 		c.ConfigDB,
 		c.PubClient,
@@ -294,6 +306,7 @@ func (c *Server) setupEnrollmentService() error {
 		c.ServerPublicURL,
 		c.TLSCertPath,
 		SCEPCertificateSubject,
+		acmeDirectoryURL,
 		c.ProfileDB,
 		chalStore,
 	)
@@ -343,6 +356,17 @@ func (c *Server) setupDepClient() error {
 	}
 
 	c.DEPClient = dep.NewClient(conf, opts...)
+
+	// Wire GetToken handler now that the DEP client is ready.
+	if c.coreMDMService != nil {
+		switch {
+		case c.GetTokenLocal:
+			c.coreMDMService.WithGetToken(NewLocalGetTokenSigner(c.ConfigDB, c.DEPClient))
+		case c.GetTokenURL != "":
+			c.coreMDMService.WithGetToken(NewGetTokenHTTPCaller(c.GetTokenURL, http.DefaultClient))
+		}
+	}
+
 	return nil
 }
 

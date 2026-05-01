@@ -74,18 +74,17 @@ func (mw *verifyCertificateMiddleware) Acknowledge(ctx context.Context, req mdm.
 	if err != nil {
 		return nil, errors.Wrap(err, "error retrieving device certificate")
 	}
+
+	if !mw.validateSCEPIssuer {
+		return mw.next.Acknowledge(ctx, req)
+	}
+
 	hasCN, err := mw.store.HasCN(devcert.Subject.CommonName, 0, devcert, false)
 	if err != nil {
 		return nil, errors.Wrap(err, "error checking device certificate")
 	}
-
 	unauth_err := errors.New("unauthorized client")
-	if !hasCN && !mw.validateSCEPIssuer {
-		_ = level.Info(mw.logger).Log("err", unauth_err, "issuer", devcert.Issuer.String(), "expiration", devcert.NotAfter)
-		return nil, unauth_err
-	}
-
-	if !hasCN && mw.validateSCEPIssuer {
+	if !hasCN {
 		err := mw.verifyIssuer(devcert)
 		if err != nil {
 			_ = level.Info(mw.logger).Log("err", err, "issuer", devcert.Issuer.String(), "expiration", devcert.NotAfter)
@@ -101,16 +100,20 @@ func (mw *verifyCertificateMiddleware) Checkin(ctx context.Context, req mdm.Chec
 	if err != nil {
 		return nil, errors.Wrap(err, "error retrieving device certificate")
 	}
+
+	if !mw.validateSCEPIssuer {
+		// Without issuer validation, UDIDCertAuthMiddleware handles cert security.
+		// Bypassing HasCN allows ACME-issued certs (not in SCEP depot) to work.
+		return mw.next.Checkin(ctx, req)
+	}
+
+	// validateSCEPIssuer=true: verify the cert chains to MicroMDM's SCEP CA.
 	hasCN, err := mw.store.HasCN(devcert.Subject.CommonName, 0, devcert, false)
 	if err != nil {
 		return nil, errors.Wrap(err, "error checking device certificate")
 	}
 	unauth_err := errors.New("unauthorized client")
-	if !hasCN && !mw.validateSCEPIssuer {
-		_ = level.Info(mw.logger).Log("err", unauth_err, "issuer", devcert.Issuer.String(), "expiration", devcert.NotAfter)
-		return nil, unauth_err
-	}
-	if !hasCN && mw.validateSCEPIssuer {
+	if !hasCN {
 		err := mw.verifyIssuer(devcert)
 		if err != nil {
 			_ = level.Info(mw.logger).Log("err", err, "issuer", devcert.Issuer.String(), "expiration", devcert.NotAfter)

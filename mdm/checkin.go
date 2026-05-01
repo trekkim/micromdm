@@ -77,6 +77,22 @@ func (svc *MDMService) Checkin(ctx context.Context, event CheckinEvent) ([]byte,
 		if err != nil {
 			return resp, fmt.Errorf("declarative management: %w", err)
 		}
+	case GetTokenTopic:
+		if svc.getToken == nil {
+			return nil, stderrors.New("no GetToken handler configured (-get-token-url)")
+		}
+
+		tokenData, gtErr := svc.getToken.GetToken(ctx, event.Command.UDID, event.Command.TokenServiceType)
+		if gtErr != nil {
+			return nil, fmt.Errorf("get token: %w", gtErr)
+		}
+
+		resp, err = plist.Marshal(struct {
+			TokenData []byte `plist:"TokenData"`
+		}{TokenData: tokenData})
+		if err != nil {
+			return nil, fmt.Errorf("marshal GetToken response: %w", err)
+		}
 	}
 
 	err = svc.pub.Publish(ctx, topic, msg)
@@ -97,6 +113,8 @@ func topicFromMessage(messageType string) (string, error) {
 		return SetBootstrapTokenTopic, nil
 	case "DeclarativeManagement":
 		return DeclarativeManagementTopic, nil
+	case "GetToken":
+		return GetTokenTopic, nil
 	default:
 		return "", errors.Errorf("unknown checkin message type %s", messageType)
 	}

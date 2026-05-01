@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
 	stdlog "log"
 	"net/http"
+	nethttputil "net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -127,6 +129,10 @@ func serve(args []string) error {
 		flPrintArgs              = flagset.Bool("print-flags", false, "Print all flags and their values")
 		flQueue                  = flagset.String("queue", env.String("MICROMDM_QUEUE", "builtin"), "command queue type")
 		flDMURL                  = flagset.String("dm", env.String("DM", ""), "URL to send Declarative Management requests to")
+		flGetTokenURL            = flagset.String("get-token-url", env.String("GET_TOKEN_URL", ""), "URL to call for GetToken (MAID JWT) requests, e.g. http://localhost:9001/v1/maidjwt/myserver")
+		flGetTokenLocal          = flagset.Bool("get-token-local", env.Bool("GET_TOKEN_LOCAL", false), "sign GetToken (MAID JWT) locally using the stored DEP private key (no external service required)")
+		flACMEBackend             = flagset.String("acme-backend", env.String("ACME_BACKEND", ""), "URL of the ACME CA backend to proxy /acme/* requests to, e.g. https://localhost:9003")
+		flACMEEnrollment          = flagset.Bool("acme-enrollment", env.Bool("ACME_ENROLLMENT", false), "include ACME payload in enrollment profile (requires -acme-backend)")
 		flLogTime                = flagset.Bool("log-time", false, "Include timestamp in log messages")
 		flP7Skew                 = flagset.Int("device-signature-skew", env.Int("MICROMDM_DEVICE_SIGNATURE_SKEW", 0), "Sets the allowable clock skew (in seconds) when verifying device signatures")
 		flDisableRedirect        = flagset.Bool("disable-redirect", env.Bool("MICROMDM_DISABLE_REDIRECT", false), "disable the :80 -> :443 redirect if listening on :443")
@@ -186,6 +192,10 @@ func serve(args []string) error {
 		SCEPClientValidity: *flSCEPClientValidity,
 		Queue:              *flQueue,
 		DMURL:              *flDMURL,
+		GetTokenURL:        *flGetTokenURL,
+		GetTokenLocal:      *flGetTokenLocal,
+		ACMEBackend:        *flACMEBackend,
+		ACMEEnrollment:     *flACMEEnrollment,
 	}
 	if !sm.UseDynSCEPChallenge {
 		// TODO: we have a static SCEP challenge password here to prevent
@@ -337,6 +347,17 @@ func serve(args []string) error {
 			stdlog.Fatal(err)
 		}
 		r.PathPrefix("/repo/").Handler(http.StripPrefix("/repo/", http.FileServer(http.Dir(*flRepoPath))))
+	}
+
+	if *flACMEBackend != "" {
+		acmeBackendURL, err := url.Parse(*flACMEBackend)
+		if err != nil {
+			stdlog.Fatalf("invalid acme-backend URL: %v", err)
+		}
+		acmeProxy := nethttputil.NewSingleHostReverseProxy(acmeBackendURL)
+		acmeProxy.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec
+		r.PathPrefix("/acme/").Handler(acmeProxy)
+		stdlog.Printf("ACME proxy enabled: /acme/* → %s", *flACMEBackend)
 	}
 
 	var handler http.Handler
